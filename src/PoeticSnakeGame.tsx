@@ -28,13 +28,7 @@ interface Theme {
   bgColor: string;
 }
 
-interface PoemLine {
-  line: string;
-  imageUrl: string;
-  word: string;
-}
-
-type GameState = 'MENU' | 'THEME_SELECT' | 'PLAYING' | 'POEM_SHOW' | 'IMAGE_SHOW' | 'GAME_OVER';
+type GameState = 'MENU' | 'THEME_SELECT' | 'PLAYING' | 'POEM_SHOW' | 'GAME_OVER';
 type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
 
 const GRID_SIZE = 20;
@@ -136,11 +130,19 @@ const MAGIC_EFFECTS: Record<string, { effect: string }> = {
   '宝藏': { effect: '海底宝藏箱缓缓打开' }
 };
 
-// 生成AI图像URL - 使用Pollinations AI
-const generateImageUrl = (prompt: string, seed?: number): string => {
-  const encodedPrompt = encodeURIComponent(prompt);
-  const seedParam = seed !== undefined ? `&seed=${seed}` : '';
-  return `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true${seedParam}`;
+// 生成简单快速的SVG占位图
+const generateSvgImage = (word: string, theme: Theme): string => {
+  const colors = ['#4ecdc4', '#ff6b6b', '#ffd93d', '#6bcb77', '#4d96ff', '#ff9f45'];
+  const bgColor = colors[Math.floor(Math.random() * colors.length)];
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+      <rect width="200" height="200" fill="${bgColor}" opacity="0.2"/>
+      <circle cx="100" cy="100" r="60" fill="${bgColor}" opacity="0.6"/>
+      <text x="100" y="110" text-anchor="middle" font-size="48" fill="#fff" font-family="Arial">${word}</text>
+      <text x="100" y="160" text-anchor="middle" font-size="14" fill="${bgColor}" font-family="Arial">${theme.name}</text>
+    </svg>
+  `;
+  return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
 };
 
 // 生成诗歌
@@ -183,16 +185,13 @@ const PoeticSnakeGame: React.FC = () => {
   const [words, setWords] = useState<WordItem[]>([]);
   const [collectedWords, setCollectedWords] = useState<CollectedWord[]>([]);
   const [poem, setPoem] = useState<string[]>([]);
-  const [poemImages, setPoemImages] = useState<PoemLine[]>([]);
   const [score, setScore] = useState(0);
   const [magicEffects, setMagicEffects] = useState<string[]>([]);
   const [currentBgColor, setCurrentBgColor] = useState(THEMES[0].bgColor);
   const [showRemix, setShowRemix] = useState(false);
   const [remixedPoem, setRemixedPoem] = useState<string[]>([]);
-  const [finalImage, setFinalImage] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const [eatenWordIds, setEatenWordIds] = useState<Set<string>>(new Set());
+  const [usedWords, setUsedWords] = useState<Set<string>>(new Set());
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameLoopRef = useRef<NodeJS.Timeout | null>(null);
@@ -200,23 +199,30 @@ const PoeticSnakeGame: React.FC = () => {
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const gameStateRef = useRef<GameState>('MENU');
 
-  // 同步gameState到ref
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
 
-  const generateRandomWord = useCallback((currentSnake: Position[], currentWords: WordItem[]): WordItem => {
-    const isMagic = Math.random() < 0.15;
-    const wordPool = isMagic ? selectedTheme.magicWords : selectedTheme.words;
-    const allWords = [...selectedTheme.words, ...selectedTheme.magicWords];
+  // 生成随机单词 - 确保每局不重复
+  const generateRandomWord = useCallback((currentSnake: Position[], currentWords: WordItem[], usedWordsSet: Set<string>): WordItem | null => {
+    const availableNormalWords = selectedTheme.words.filter(w => !usedWordsSet.has(w));
+    const availableMagicWords = selectedTheme.magicWords.filter(w => !usedWordsSet.has(w));
     
-    // 过滤掉已经收集过的单词
-    const usedWords = new Set(collectedWords.map(w => w.word));
-    const availableWords = wordPool.filter(w => !usedWords.has(w));
+    // 如果所有单词都用完了，返回null
+    if (availableNormalWords.length === 0 && availableMagicWords.length === 0) {
+      return null;
+    }
     
-    const word = availableWords.length > 0 
-      ? availableWords[Math.floor(Math.random() * availableWords.length)]
-      : allWords[Math.floor(Math.random() * allWords.length)];
+    // 15%概率生成魔法单词，如果没有可用的魔法单词就用普通单词
+    const isMagic = availableMagicWords.length > 0 && Math.random() < 0.15;
+    const wordPool = isMagic ? availableMagicWords : availableNormalWords;
+    
+    // 如果选中的词池为空，使用另一个
+    const finalWordPool = wordPool.length > 0 ? wordPool : (isMagic ? availableNormalWords : availableMagicWords);
+    
+    if (finalWordPool.length === 0) return null;
+    
+    const word = finalWordPool[Math.floor(Math.random() * finalWordPool.length)];
     
     let newPos: Position;
     let attempts = 0;
@@ -234,37 +240,50 @@ const PoeticSnakeGame: React.FC = () => {
     );
     
     return { word, x: newPos.x, y: newPos.y, type: isMagic ? 'magic' : 'normal' };
-  }, [selectedTheme, collectedWords]);
+  }, [selectedTheme]);
 
-  const initializeWords = useCallback((currentSnake: Position[]) => {
+  // 初始化单词
+  const initializeWords = useCallback((currentSnake: Position[], usedWordsSet: Set<string>) => {
     const newWords: WordItem[] = [];
     for (let i = 0; i < 3; i++) {
-      newWords.push(generateRandomWord(currentSnake, newWords));
+      const word = generateRandomWord(currentSnake, newWords, usedWordsSet);
+      if (word) {
+        newWords.push(word);
+        usedWordsSet.add(word.word);
+      }
     }
     setWords(newWords);
+    setUsedWords(new Set(usedWordsSet));
   }, [generateRandomWord]);
 
+  // 重置游戏
   const resetGame = useCallback(() => {
     const initialSnake = [{ x: 10, y: 10 }];
+    const newUsedWords = new Set<string>();
+    
     setSnake(initialSnake);
     setDirection('RIGHT');
     setNextDirection('RIGHT');
     setCollectedWords([]);
-    setEatenWordIds(new Set());
+    setUsedWords(newUsedWords);
     setWords([]);
     setPoem([]);
-    setPoemImages([]);
     setScore(0);
     setMagicEffects([]);
     setCurrentBgColor(selectedTheme.bgColor);
     setShowRemix(false);
     setRemixedPoem([]);
-    setFinalImage('');
-    setImageLoaded(false);
-    initializeWords(initialSnake);
+    setIsGenerating(false);
+    
+    // 延迟初始化，确保状态已更新
+    setTimeout(() => {
+      initializeWords(initialSnake, newUsedWords);
+    }, 100);
+    
     setGameState('PLAYING');
   }, [selectedTheme, initializeWords]);
 
+  // 检查碰撞
   const checkCollision = useCallback((head: Position, body: Position[]): boolean => {
     if (head.x < 0 || head.x >= GRID_SIZE || head.y < 0 || head.y >= GRID_SIZE) {
       return true;
@@ -272,25 +291,29 @@ const PoeticSnakeGame: React.FC = () => {
     return body.some(segment => segment.x === head.x && segment.y === head.y);
   }, []);
 
-  // 使用ref存储最新状态，避免闭包问题
+  // 使用ref存储最新状态
   const wordsRef = useRef(words);
   const collectedWordsRef = useRef(collectedWords);
   const snakeRef = useRef(snake);
   const directionRef = useRef(direction);
   const nextDirectionRef = useRef(nextDirection);
+  const usedWordsRef = useRef(usedWords);
 
   useEffect(() => { wordsRef.current = words; }, [words]);
   useEffect(() => { collectedWordsRef.current = collectedWords; }, [collectedWords]);
   useEffect(() => { snakeRef.current = snake; }, [snake]);
   useEffect(() => { directionRef.current = direction; }, [direction]);
   useEffect(() => { nextDirectionRef.current = nextDirection; }, [nextDirection]);
+  useEffect(() => { usedWordsRef.current = usedWords; }, [usedWords]);
 
+  // 移动蛇
   const moveSnake = useCallback(() => {
     if (gameStateRef.current !== 'PLAYING') return;
 
     const currentSnake = snakeRef.current;
     const currentWords = wordsRef.current;
     const currentCollected = collectedWordsRef.current;
+    const currentUsedWords = usedWordsRef.current;
     const newDirection = nextDirectionRef.current;
     
     setDirection(newDirection);
@@ -315,11 +338,12 @@ const PoeticSnakeGame: React.FC = () => {
     
     if (eatenWordIndex !== -1) {
       const eatenWord = currentWords[eatenWordIndex];
-      const wordId = `${eatenWord.word}-${eatenWord.x}-${eatenWord.y}`;
       
-      // 检查这个单词是否已经被吃过（防止重复）
-      if (!eatenWordIds.has(wordId)) {
-        setEatenWordIds(prev => new Set([...prev, wordId]));
+      // 检查这个单词是否已经被收集过（防止重复）
+      if (!currentUsedWords.has(eatenWord.word)) {
+        const newUsedWords = new Set(currentUsedWords);
+        newUsedWords.add(eatenWord.word);
+        setUsedWords(newUsedWords);
         
         const associations = POETIC_ASSOCIATIONS[eatenWord.word] || ['美丽的意象'];
         const association = associations[Math.floor(Math.random() * associations.length)];
@@ -338,22 +362,8 @@ const PoeticSnakeGame: React.FC = () => {
           setTimeout(() => {
             const generatedPoem = generatePoem(updatedCollected, selectedTheme);
             setPoem(generatedPoem);
-            
-            const images: PoemLine[] = updatedCollected.map((w, idx) => ({
-              line: w.poeticAssociation,
-              imageUrl: generateImageUrl(
-                `${w.word} ${w.poeticAssociation} ${selectedTheme.style} artistic illustration`,
-                idx + 1
-              ),
-              word: w.word
-            }));
-            setPoemImages(images);
-            
-            const finalPrompt = `${selectedTheme.style} poetic landscape with ${updatedCollected.map(w => w.word).join(', ')} artistic masterpiece`;
-            setFinalImage(generateImageUrl(finalPrompt, 999));
-            
             setGameState('POEM_SHOW');
-          }, 500);
+          }, 300);
         }
 
         setScore(prev => prev + (eatenWord.type === 'magic' ? 20 : 10));
@@ -368,15 +378,20 @@ const PoeticSnakeGame: React.FC = () => {
 
       // 生成新单词替换被吃掉的
       const remaining = currentWords.filter((_, i) => i !== eatenWordIndex);
-      const newWord = generateRandomWord(newSnake, remaining);
-      setWords([...remaining, newWord]);
+      const newWord = generateRandomWord(newSnake, remaining, usedWordsRef.current);
+      if (newWord) {
+        setWords([...remaining, newWord]);
+      } else {
+        setWords(remaining);
+      }
     } else {
       newSnake.pop();
     }
 
     setSnake(newSnake);
-  }, [checkCollision, generateRandomWord, selectedTheme, eatenWordIds]);
+  }, [checkCollision, generateRandomWord, selectedTheme]);
 
+  // 游戏循环
   useEffect(() => {
     if (gameState === 'PLAYING') {
       gameLoopRef.current = setInterval(moveSnake, speedRef.current);
@@ -571,12 +586,7 @@ const PoeticSnakeGame: React.FC = () => {
       setRemixedPoem(remixed);
       setShowRemix(true);
       setIsGenerating(false);
-    }, 2000);
-  };
-
-  const handleShowImage = () => {
-    setImageLoaded(false);
-    setGameState('IMAGE_SHOW');
+    }, 500);
   };
 
   const handleShare = () => {
@@ -678,34 +688,29 @@ const PoeticSnakeGame: React.FC = () => {
           <div className="overlay poem-overlay">
             <div className="overlay-content poem-content">
               <h2>🎨 AI为你创作的诗</h2>
-              <div className="poem-text">
-                {(showRemix && remixedPoem.length > 0 ? remixedPoem : poem).map((line, index) => (
-                  <p key={index} className="poem-line">{line}</p>
-                ))}
-              </div>
               
-              <div className="poem-images">
-                {poemImages.map((item, index) => (
-                  <div key={index} className="poem-image-item">
-                    <div className="image-wrapper">
-                      <img 
-                        src={item.imageUrl} 
-                        alt={item.word}
-                        loading="lazy"
-                        onError={(e) => {
-                          const target = e.target as HTMLImageElement;
-                          target.style.display = 'none';
-                          const placeholder = target.nextElementSibling as HTMLElement;
-                          if (placeholder) placeholder.style.display = 'flex';
-                        }}
-                      />
-                      <div className="image-placeholder" style={{ display: 'none' }}>
-                        <span>{item.word}</span>
+              {/* 诗歌和图片在同一页面 */}
+              <div className="poem-and-images">
+                <div className="poem-text">
+                  {(showRemix && remixedPoem.length > 0 ? remixedPoem : poem).map((line, index) => (
+                    <p key={index} className="poem-line">{line}</p>
+                  ))}
+                </div>
+                
+                <div className="poem-images">
+                  {collectedWords.map((word, index) => (
+                    <div key={index} className="poem-image-item">
+                      <div className="image-wrapper">
+                        <img 
+                          src={generateSvgImage(word.word, selectedTheme)} 
+                          alt={word.word}
+                        />
                       </div>
+                      <span className="word-label">{word.word}</span>
+                      <span className="association-label">{word.poeticAssociation}</span>
                     </div>
-                    <span className="word-label">{item.word}</span>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
 
               <div className="poem-actions">
@@ -715,58 +720,6 @@ const PoeticSnakeGame: React.FC = () => {
                   disabled={isGenerating}
                 >
                   {isGenerating ? '✨ 重新混合中...' : '🎲 重新混合'}
-                </button>
-                <button className="btn btn-primary" onClick={handleShowImage}>
-                  🎨 生成画作
-                </button>
-                <button className="btn btn-success" onClick={handleShare}>
-                  📤 分享创作
-                </button>
-                <button className="btn btn-secondary" onClick={resetGame}>
-                  🔄 再玩一次
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {gameState === 'IMAGE_SHOW' && (
-          <div className="overlay image-overlay">
-            <div className="overlay-content image-content">
-              <h2>🎨 你的AI艺术作品</h2>
-              <div className="final-image-container">
-                {!imageLoaded && (
-                  <div className="image-loading">
-                    <div className="spinner"></div>
-                    <p>AI正在创作中...</p>
-                  </div>
-                )}
-                <img 
-                  src={finalImage} 
-                  alt="AI生成的诗歌画作"
-                  className="final-image"
-                  style={{ display: imageLoaded ? 'block' : 'none' }}
-                  onLoad={() => setImageLoaded(true)}
-                  onError={(e) => {
-                    const target = e.target as HTMLImageElement;
-                    target.style.display = 'none';
-                    setImageLoaded(true);
-                  }}
-                />
-              </div>
-              <div className="collected-words-summary">
-                <h3>使用的单词：</h3>
-                <div className="words-tags">
-                  {collectedWords.map((word, index) => (
-                    <span key={index} className={`word-tag ${word.type}`}>
-                      {word.word}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <div className="poem-actions">
-                <button className="btn btn-secondary" onClick={() => setGameState('POEM_SHOW')}>
-                  📜 返回诗歌
                 </button>
                 <button className="btn btn-success" onClick={handleShare}>
                   📤 分享创作
