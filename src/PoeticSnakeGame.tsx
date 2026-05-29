@@ -491,21 +491,40 @@ const PoeticSnakeGame: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // 触屏控制
+  // 触屏控制 - 兼容微信内置浏览器
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // 微信内置浏览器兼容性处理
+    const isWeixin = /MicroMessenger/i.test(navigator.userAgent);
+    
     const handleTouchStart = (e: TouchEvent) => {
       if (gameStateRef.current !== 'PLAYING') return;
-      e.preventDefault();
+      
+      // 微信环境下需要特殊处理
+      if (isWeixin) {
+        e.stopPropagation();
+      }
+      
       const touch = e.touches[0];
       touchStartRef.current = { x: touch.clientX, y: touch.clientY };
     };
 
+    const handleTouchMove = (e: TouchEvent) => {
+      // 阻止默认滚动行为
+      if (gameStateRef.current === 'PLAYING') {
+        e.preventDefault();
+      }
+    };
+
     const handleTouchEnd = (e: TouchEvent) => {
       if (gameStateRef.current !== 'PLAYING') return;
-      e.preventDefault();
+      
+      if (isWeixin) {
+        e.stopPropagation();
+      }
+      
       if (!touchStartRef.current) return;
 
       const touch = e.changedTouches[0];
@@ -535,12 +554,15 @@ const PoeticSnakeGame: React.FC = () => {
       touchStartRef.current = null;
     };
 
-    canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
-    canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+    // 使用 capture 阶段确保事件被捕获
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true });
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false, capture: true });
+    canvas.addEventListener('touchend', handleTouchEnd, { passive: true, capture: true });
 
     return () => {
-      canvas.removeEventListener('touchstart', handleTouchStart);
-      canvas.removeEventListener('touchend', handleTouchEnd);
+      canvas.removeEventListener('touchstart', handleTouchStart, { capture: true });
+      canvas.removeEventListener('touchmove', handleTouchMove, { capture: true });
+      canvas.removeEventListener('touchend', handleTouchEnd, { capture: true });
     };
   }, []);
 
@@ -663,6 +685,22 @@ const PoeticSnakeGame: React.FC = () => {
     }
   };
 
+  // 处理方向按钮点击 - 兼容微信
+  const handleDirectionBtn = (newDir: Direction) => {
+    if (gameStateRef.current !== 'PLAYING') return;
+    
+    const opposites: Record<Direction, Direction> = {
+      'UP': 'DOWN',
+      'DOWN': 'UP',
+      'LEFT': 'RIGHT',
+      'RIGHT': 'LEFT'
+    };
+    
+    if (directionRef.current !== opposites[newDir]) {
+      setNextDirection(newDir);
+    }
+  };
+
   return (
     <div className="poetic-game-container">
       <div className="game-header">
@@ -693,7 +731,7 @@ const PoeticSnakeGame: React.FC = () => {
           width={GRID_SIZE * CELL_SIZE}
           height={GRID_SIZE * CELL_SIZE}
           className="game-canvas"
-          style={{ touchAction: 'none' }}
+          style={{ touchAction: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}
         />
 
         {gameState === 'MENU' && (
@@ -818,21 +856,25 @@ const PoeticSnakeGame: React.FC = () => {
           <div className="d-pad">
             <button 
               className="d-pad-btn up"
-              onTouchStart={(e) => { e.preventDefault(); if (direction !== 'DOWN') setNextDirection('UP'); }}
+              onClick={() => handleDirectionBtn('UP')}
+              onTouchStart={(e) => { e.preventDefault(); handleDirectionBtn('UP'); }}
             >⬆️</button>
             <div className="d-pad-middle">
               <button 
                 className="d-pad-btn left"
-                onTouchStart={(e) => { e.preventDefault(); if (direction !== 'RIGHT') setNextDirection('LEFT'); }}
+                onClick={() => handleDirectionBtn('LEFT')}
+                onTouchStart={(e) => { e.preventDefault(); handleDirectionBtn('LEFT'); }}
               >⬅️</button>
               <button 
                 className="d-pad-btn right"
-                onTouchStart={(e) => { e.preventDefault(); if (direction !== 'LEFT') setNextDirection('RIGHT'); }}
+                onClick={() => handleDirectionBtn('RIGHT')}
+                onTouchStart={(e) => { e.preventDefault(); handleDirectionBtn('RIGHT'); }}
               >➡️</button>
             </div>
             <button 
               className="d-pad-btn down"
-              onTouchStart={(e) => { e.preventDefault(); if (direction !== 'UP') setNextDirection('DOWN'); }}
+              onClick={() => handleDirectionBtn('DOWN')}
+              onTouchStart={(e) => { e.preventDefault(); handleDirectionBtn('DOWN'); }}
             >⬇️</button>
           </div>
         </div>
