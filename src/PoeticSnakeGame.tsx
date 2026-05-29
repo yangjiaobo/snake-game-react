@@ -11,6 +11,7 @@ interface WordItem {
   x: number;
   y: number;
   type: 'normal' | 'magic';
+  id: string;
 }
 
 interface CollectedWord {
@@ -176,6 +177,8 @@ const generatePoem = (words: CollectedWord[], theme: Theme): string[] => {
   return lines;
 };
 
+let globalWordIdCounter = 0;
+
 const PoeticSnakeGame: React.FC = () => {
   const [snake, setSnake] = useState<Position[]>([{ x: 10, y: 10 }]);
   const [direction, setDirection] = useState<Direction>('RIGHT');
@@ -191,22 +194,50 @@ const PoeticSnakeGame: React.FC = () => {
   const [showRemix, setShowRemix] = useState(false);
   const [remixedPoem, setRemixedPoem] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [usedWords, setUsedWords] = useState<Set<string>>(new Set());
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameLoopRef = useRef<NodeJS.Timeout | null>(null);
   const speedRef = useRef(200);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const gameStateRef = useRef<GameState>('MENU');
+  
+  // 使用ref来跟踪状态，避免闭包问题
+  const collectedWordsRef = useRef<CollectedWord[]>([]);
+  const wordsRef = useRef<WordItem[]>([]);
+  const snakeRef = useRef<Position[]>([{ x: 10, y: 10 }]);
+  const directionRef = useRef<Direction>('RIGHT');
+  const nextDirectionRef = useRef<Direction>('RIGHT');
+  const usedWordsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
 
+  useEffect(() => {
+    collectedWordsRef.current = collectedWords;
+  }, [collectedWords]);
+
+  useEffect(() => {
+    wordsRef.current = words;
+  }, [words]);
+
+  useEffect(() => {
+    snakeRef.current = snake;
+  }, [snake]);
+
+  useEffect(() => {
+    directionRef.current = direction;
+  }, [direction]);
+
+  useEffect(() => {
+    nextDirectionRef.current = nextDirection;
+  }, [nextDirection]);
+
   // 生成随机单词 - 确保每局不重复
-  const generateRandomWord = useCallback((currentSnake: Position[], currentWords: WordItem[], usedWordsSet: Set<string>): WordItem | null => {
-    const availableNormalWords = selectedTheme.words.filter(w => !usedWordsSet.has(w));
-    const availableMagicWords = selectedTheme.magicWords.filter(w => !usedWordsSet.has(w));
+  const generateRandomWord = useCallback((currentSnake: Position[], currentWords: WordItem[]): WordItem | null => {
+    const usedWords = usedWordsRef.current;
+    const availableNormalWords = selectedTheme.words.filter(w => !usedWords.has(w));
+    const availableMagicWords = selectedTheme.magicWords.filter(w => !usedWords.has(w));
     
     // 如果所有单词都用完了，返回null
     if (availableNormalWords.length === 0 && availableMagicWords.length === 0) {
@@ -239,34 +270,51 @@ const PoeticSnakeGame: React.FC = () => {
       )
     );
     
-    return { word, x: newPos.x, y: newPos.y, type: isMagic ? 'magic' : 'normal' };
+    globalWordIdCounter++;
+    return { 
+      word, 
+      x: newPos.x, 
+      y: newPos.y, 
+      type: isMagic ? 'magic' : 'normal',
+      id: `${word}-${globalWordIdCounter}`
+    };
   }, [selectedTheme]);
 
   // 初始化单词
-  const initializeWords = useCallback((currentSnake: Position[], usedWordsSet: Set<string>) => {
+  const initializeWords = useCallback(() => {
+    const currentSnake = snakeRef.current;
     const newWords: WordItem[] = [];
     for (let i = 0; i < 3; i++) {
-      const word = generateRandomWord(currentSnake, newWords, usedWordsSet);
+      const word = generateRandomWord(currentSnake, newWords);
       if (word) {
         newWords.push(word);
-        usedWordsSet.add(word.word);
       }
     }
     setWords(newWords);
-    setUsedWords(new Set(usedWordsSet));
   }, [generateRandomWord]);
 
   // 重置游戏
   const resetGame = useCallback(() => {
+    globalWordIdCounter = 0;
     const initialSnake = [{ x: 10, y: 10 }];
-    const newUsedWords = new Set<string>();
     
     setSnake(initialSnake);
+    snakeRef.current = initialSnake;
+    
     setDirection('RIGHT');
+    directionRef.current = 'RIGHT';
+    
     setNextDirection('RIGHT');
+    nextDirectionRef.current = 'RIGHT';
+    
     setCollectedWords([]);
-    setUsedWords(newUsedWords);
+    collectedWordsRef.current = [];
+    
+    usedWordsRef.current = new Set();
+    
     setWords([]);
+    wordsRef.current = [];
+    
     setPoem([]);
     setScore(0);
     setMagicEffects([]);
@@ -277,7 +325,7 @@ const PoeticSnakeGame: React.FC = () => {
     
     // 延迟初始化，确保状态已更新
     setTimeout(() => {
-      initializeWords(initialSnake, newUsedWords);
+      initializeWords();
     }, 100);
     
     setGameState('PLAYING');
@@ -291,29 +339,12 @@ const PoeticSnakeGame: React.FC = () => {
     return body.some(segment => segment.x === head.x && segment.y === head.y);
   }, []);
 
-  // 使用ref存储最新状态
-  const wordsRef = useRef(words);
-  const collectedWordsRef = useRef(collectedWords);
-  const snakeRef = useRef(snake);
-  const directionRef = useRef(direction);
-  const nextDirectionRef = useRef(nextDirection);
-  const usedWordsRef = useRef(usedWords);
-
-  useEffect(() => { wordsRef.current = words; }, [words]);
-  useEffect(() => { collectedWordsRef.current = collectedWords; }, [collectedWords]);
-  useEffect(() => { snakeRef.current = snake; }, [snake]);
-  useEffect(() => { directionRef.current = direction; }, [direction]);
-  useEffect(() => { nextDirectionRef.current = nextDirection; }, [nextDirection]);
-  useEffect(() => { usedWordsRef.current = usedWords; }, [usedWords]);
-
-  // 移动蛇
+  // 移动蛇 - 修复后的逻辑，确保吃一个单词只收集一次
   const moveSnake = useCallback(() => {
     if (gameStateRef.current !== 'PLAYING') return;
 
     const currentSnake = snakeRef.current;
     const currentWords = wordsRef.current;
-    const currentCollected = collectedWordsRef.current;
-    const currentUsedWords = usedWordsRef.current;
     const newDirection = nextDirectionRef.current;
     
     setDirection(newDirection);
@@ -333,62 +364,92 @@ const PoeticSnakeGame: React.FC = () => {
       return;
     }
 
-    const newSnake = [newHead, ...currentSnake];
     const eatenWordIndex = currentWords.findIndex(w => w.x === newHead.x && w.y === newHead.y);
-    
+    let newSnake: Position[];
+    let didEatWord = false;
+    let eatenWord: WordItem | null = null;
+
     if (eatenWordIndex !== -1) {
-      const eatenWord = currentWords[eatenWordIndex];
+      eatenWord = currentWords[eatenWordIndex];
+      // 检查这个单词id是否已经被收集过
+      if (!usedWordsRef.current.has(eatenWord.id)) {
+        didEatWord = true;
+      }
+    }
+
+    if (didEatWord && eatenWord) {
+      // 吃到新单词：蛇变长（不pop尾部）
+      newSnake = [newHead, ...currentSnake];
+
+      // 标记这个单词的id和word为已使用
+      usedWordsRef.current = new Set([...usedWordsRef.current, eatenWord.id, eatenWord.word]);
       
-      // 检查这个单词是否已经被收集过（防止重复）
-      if (!currentUsedWords.has(eatenWord.word)) {
-        const newUsedWords = new Set(currentUsedWords);
-        newUsedWords.add(eatenWord.word);
-        setUsedWords(newUsedWords);
-        
-        const associations = POETIC_ASSOCIATIONS[eatenWord.word] || ['美丽的意象'];
-        const association = associations[Math.floor(Math.random() * associations.length)];
-        
-        const collectedWord: CollectedWord = {
-          word: eatenWord.word,
-          poeticAssociation: association,
-          type: eatenWord.type
-        };
+      const associations = POETIC_ASSOCIATIONS[eatenWord.word] || ['美丽的意象'];
+      const association = associations[Math.floor(Math.random() * associations.length)];
+      
+      const collectedWord: CollectedWord = {
+        word: eatenWord.word,
+        poeticAssociation: association,
+        type: eatenWord.type
+      };
 
-        const updatedCollected = [...currentCollected, collectedWord];
-        setCollectedWords(updatedCollected);
-
+      // 使用函数式更新确保状态正确
+      setCollectedWords(prev => {
+        const updated = [...prev, collectedWord];
+        collectedWordsRef.current = updated;
+        
         // 检查是否收集够8个单词
-        if (updatedCollected.length >= WORDS_TO_COLLECT) {
+        if (updated.length >= WORDS_TO_COLLECT) {
           setTimeout(() => {
-            const generatedPoem = generatePoem(updatedCollected, selectedTheme);
+            const generatedPoem = generatePoem(updated, selectedTheme);
             setPoem(generatedPoem);
             setGameState('POEM_SHOW');
           }, 300);
         }
+        
+        return updated;
+      });
 
-        setScore(prev => prev + (eatenWord.type === 'magic' ? 20 : 10));
+      setScore(prev => prev + (eatenWord!.type === 'magic' ? 20 : 10));
 
-        if (eatenWord.type === 'magic') {
-          const magicEffect = MAGIC_EFFECTS[eatenWord.word];
-          if (magicEffect) {
-            setMagicEffects(prev => [...prev.slice(-2), magicEffect.effect]);
-          }
+      if (eatenWord.type === 'magic') {
+        const magicEffect = MAGIC_EFFECTS[eatenWord.word];
+        if (magicEffect) {
+          setMagicEffects(prev => [...prev.slice(-2), magicEffect.effect]);
         }
       }
 
       // 生成新单词替换被吃掉的
       const remaining = currentWords.filter((_, i) => i !== eatenWordIndex);
-      const newWord = generateRandomWord(newSnake, remaining, usedWordsRef.current);
+      const newWord = generateRandomWord(newSnake, remaining);
       if (newWord) {
         setWords([...remaining, newWord]);
+        wordsRef.current = [...remaining, newWord];
       } else {
         setWords(remaining);
+        wordsRef.current = remaining;
       }
     } else {
+      // 没吃到单词或单词已被收集：正常移动（pop尾部）
+      newSnake = [newHead, ...currentSnake];
       newSnake.pop();
+      
+      // 如果碰到了已收集的单词（不应该发生，因为会生成新单词替换），也要移除它
+      if (eatenWordIndex !== -1 && !didEatWord) {
+        const remaining = currentWords.filter((_, i) => i !== eatenWordIndex);
+        const newWord = generateRandomWord(newSnake, remaining);
+        if (newWord) {
+          setWords([...remaining, newWord]);
+          wordsRef.current = [...remaining, newWord];
+        } else {
+          setWords(remaining);
+          wordsRef.current = remaining;
+        }
+      }
     }
 
     setSnake(newSnake);
+    snakeRef.current = newSnake;
   }, [checkCollision, generateRandomWord, selectedTheme]);
 
   // 游戏循环
